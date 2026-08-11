@@ -1,390 +1,123 @@
+import os
 import asyncio
-import random
-from dataclasses import dataclass, field
-from typing import Optional
+import logging
+
+from pyrogram import Client
+from pytgcalls import PyTgCalls
+from pytgcalls.types import MediaStream
+
+from config import API_ID, API_HASH
 
 
-# ============================================================
-# MEDIA ITEM
-# ============================================================
-
-@dataclass
-class MediaItem:
-    title: str
-    url: str
-    media_type: str = "audio"
-    requested_by: int = 0
-    requested_name: str = "Unknown"
-    duration: int = 0
-    thumbnail: Optional[str] = None
+logger = logging.getLogger(__name__)
 
 
-# ============================================================
-# PLAYER STATE
-# ============================================================
-
-@dataclass
-class PlayerState:
-    chat_id: int
-
-    queue: list = field(default_factory=list)
-
-    current: Optional[MediaItem] = None
-
-    paused: bool = False
-
-    volume: int = 100
-
-    loop: bool = False
-
-    playing: bool = False
-
-    joined: bool = False
-
-    mode: str = "audio"
-
-    lock: asyncio.Lock = field(
-        default_factory=asyncio.Lock
-    )
-
-
-# ============================================================
-# PLAYER MANAGER
-# ============================================================
-
-class PlayerManager:
+class TelegramPlayer:
 
     def __init__(self):
-        self.players = {}
+        self.client = None
+        self.calls = None
+        self.started = False
 
-    # --------------------------------------------------------
-    # GET PLAYER
-    # --------------------------------------------------------
+    async def start(self):
 
-    def get_player(self, chat_id: int) -> PlayerState:
+        if self.started:
+            return
 
-        if chat_id not in self.players:
+        if not API_ID:
+            raise RuntimeError("API_ID belum diatur.")
 
-            self.players[chat_id] = PlayerState(
-                chat_id=chat_id
-            )
+        if not API_HASH:
+            raise RuntimeError("API_HASH belum diatur.")
 
-        return self.players[chat_id]
-
-    # --------------------------------------------------------
-    # REMOVE PLAYER
-    # --------------------------------------------------------
-
-    def remove_player(self, chat_id: int):
-
-        if chat_id in self.players:
-
-            del self.players[chat_id]
-
-    # --------------------------------------------------------
-    # ADD QUEUE
-    # --------------------------------------------------------
-
-    async def add(
-        self,
-        chat_id: int,
-        item: MediaItem
-    ):
-
-        player = self.get_player(chat_id)
-
-        async with player.lock:
-
-            player.queue.append(item)
-
-            if len(player.queue) == 1 and not player.playing:
-
-                await self.play_next(chat_id)
-
-    # --------------------------------------------------------
-    # GET CURRENT
-    # --------------------------------------------------------
-
-    def current(
-        self,
-        chat_id: int
-    ):
-
-        player = self.get_player(chat_id)
-
-        return player.current
-
-    # --------------------------------------------------------
-    # GET QUEUE
-    # --------------------------------------------------------
-
-    def get_queue(
-        self,
-        chat_id: int
-    ):
-
-        player = self.get_player(chat_id)
-
-        return list(player.queue)
-
-    # --------------------------------------------------------
-    # PLAY NEXT
-    # --------------------------------------------------------
-
-    async def play_next(
-        self,
-        chat_id: int
-    ):
-
-        player = self.get_player(chat_id)
-
-        # LOOP CURRENT SONG
-        if player.loop and player.current:
-
-            player.playing = True
-            player.paused = False
-
-            return player.current
-
-        # NO QUEUE
-        if not player.queue:
-
-            player.current = None
-            player.playing = False
-            player.paused = False
-
-            return None
-
-        # GET NEXT
-        item = player.queue.pop(0)
-
-        player.current = item
-
-        player.mode = item.media_type
-
-        player.playing = True
-
-        player.paused = False
-
-        return item
-
-    # --------------------------------------------------------
-    # PAUSE
-    # --------------------------------------------------------
-
-    def pause(
-        self,
-        chat_id: int
-    ):
-
-        player = self.get_player(chat_id)
-
-        if not player.playing:
-            return False
-
-        if player.paused:
-            return False
-
-        player.paused = True
-
-        return True
-
-    # --------------------------------------------------------
-    # RESUME
-    # --------------------------------------------------------
-
-    def resume(
-        self,
-        chat_id: int
-    ):
-
-        player = self.get_player(chat_id)
-
-        if not player.playing:
-            return False
-
-        if not player.paused:
-            return False
-
-        player.paused = False
-
-        return True
-
-    # --------------------------------------------------------
-    # SKIP
-    # --------------------------------------------------------
-
-    async def skip(
-        self,
-        chat_id: int
-    ):
-
-        player = self.get_player(chat_id)
-
-        player.current = None
-
-        player.playing = False
-
-        player.paused = False
-
-        return await self.play_next(chat_id)
-
-    # --------------------------------------------------------
-    # STOP
-    # --------------------------------------------------------
-
-    def stop(
-        self,
-        chat_id: int
-    ):
-
-        player = self.get_player(chat_id)
-
-        player.queue.clear()
-
-        player.current = None
-
-        player.playing = False
-
-        player.paused = False
-
-        return True
-
-    # --------------------------------------------------------
-    # SHUFFLE
-    # --------------------------------------------------------
-
-    def shuffle(
-        self,
-        chat_id: int
-    ):
-
-        player = self.get_player(chat_id)
-
-        if len(player.queue) < 2:
-
-            return False
-
-        random.shuffle(player.queue)
-
-        return True
-
-    # --------------------------------------------------------
-    # SET LOOP
-    # --------------------------------------------------------
-
-    def set_loop(
-        self,
-        chat_id: int,
-        enabled: bool
-    ):
-
-        player = self.get_player(chat_id)
-
-        player.loop = enabled
-
-        return player.loop
-
-    # --------------------------------------------------------
-    # SET VOLUME
-    # --------------------------------------------------------
-
-    def set_volume(
-        self,
-        chat_id: int,
-        volume: int
-    ):
-
-        player = self.get_player(chat_id)
-
-        volume = max(
-            1,
-            min(100, int(volume))
+        self.client = Client(
+            "kairo_music",
+            api_id=int(API_ID),
+            api_hash=API_HASH,
         )
 
-        player.volume = volume
+        await self.client.start()
 
-        return volume
+        self.calls = PyTgCalls(
+            self.client
+        )
 
-    # --------------------------------------------------------
-    # CLEAR QUEUE
-    # --------------------------------------------------------
+        await self.calls.start()
 
-    def clear_queue(
-        self,
-        chat_id: int
-    ):
+        self.started = True
 
-        player = self.get_player(chat_id)
+        logger.info(
+            "Telegram voice/video engine started."
+        )
 
-        player.queue.clear()
+    async def stop(self):
 
-        return True
+        if not self.started:
+            return
 
-    # --------------------------------------------------------
-    # REMOVE QUEUE ITEM
-    # --------------------------------------------------------
+        try:
+            await self.calls.stop()
+        except Exception:
+            pass
 
-    def remove_queue_item(
-        self,
-        chat_id: int,
-        index: int
-    ):
+        try:
+            await self.client.stop()
+        except Exception:
+            pass
 
-        player = self.get_player(chat_id)
+        self.started = False
 
-        if index < 0:
-            return False
-
-        if index >= len(player.queue):
-            return False
-
-        player.queue.pop(index)
-
-        return True
-
-    # --------------------------------------------------------
-    # JOIN STATE
-    # --------------------------------------------------------
-
-    def set_joined(
+    async def play(
         self,
         chat_id: int,
-        joined: bool
+        source: str,
     ):
 
-        player = self.get_player(chat_id)
+        if not self.started:
+            await self.start()
 
-        player.joined = joined
+        await self.calls.play(
+            chat_id,
+            MediaStream(
+                source
+            ),
+        )
 
-        return joined
-
-    # --------------------------------------------------------
-    # STATUS
-    # --------------------------------------------------------
-
-    def status(
+    async def pause(
         self,
-        chat_id: int
+        chat_id: int,
     ):
 
-        player = self.get_player(chat_id)
+        if not self.started:
+            return
 
-        return {
-            "chat_id": player.chat_id,
-            "current": player.current,
-            "queue": player.queue,
-            "paused": player.paused,
-            "playing": player.playing,
-            "volume": player.volume,
-            "loop": player.loop,
-            "joined": player.joined,
-            "mode": player.mode,
-        }
+        await self.calls.pause(
+            chat_id
+        )
+
+    async def resume(
+        self,
+        chat_id: int,
+    ):
+
+        if not self.started:
+            return
+
+        await self.calls.resume(
+            chat_id
+        )
+
+    async def stop_chat(
+        self,
+        chat_id: int,
+    ):
+
+        if not self.started:
+            return
+
+        await self.calls.leave_call(
+            chat_id
+        )
 
 
-# ============================================================
-# GLOBAL PLAYER MANAGER
-# ============================================================
-
-player_manager = PlayerManager()
+telegram_player = TelegramPlayer()
