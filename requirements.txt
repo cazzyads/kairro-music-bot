@@ -1,5 +1,7 @@
+```text
 python-telegram-bot==22.8
 pyrogram==2.0.106
 py-tgcalls==2.3.3
 yt-dlp[default]
 tgcrypto
+```
