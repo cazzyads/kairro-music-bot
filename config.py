@@ -1,25 +1,40 @@
 import os
 
 # ==============================
-# BOT CONFIGURATION
+# TELEGRAM BOT
 # ==============================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
-# Nama bot
+# ==============================
+# TELEGRAM API
+# ==============================
+
+API_ID = os.getenv("API_ID", "")
+API_HASH = os.getenv("API_HASH", "")
+
+# ==============================
+# BOT
+# ==============================
+
 BOT_NAME = "KAIRO MUSIC"
 
-# Database
+# ==============================
+# DATABASE
+# ==============================
+
 DATABASE_FILE = "musicbot.db"
 
-# Folder temporary untuk file audio/video
+# ==============================
+# MEDIA
+# ==============================
+
 DOWNLOAD_DIR = "downloads"
 
-# Maximum queue per group
 MAX_QUEUE_SIZE = 50
 
-# Default volume
 DEFAULT_VOLUME = 100
+
 
 # ==============================
 # VALIDATION
@@ -27,3 +42,9 @@ DEFAULT_VOLUME = 100
 
 if not BOT_TOKEN:
     print("WARNING: BOT_TOKEN belum diatur.")
+
+if not API_ID:
+    print("WARNING: API_ID belum diatur.")
+
+if not API_HASH:
+    print("WARNING: API_HASH belum diatur.")
