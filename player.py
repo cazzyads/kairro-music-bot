@@ -12,13 +12,8 @@ from pytgcalls.types import AudioQuality, MediaStream, StreamEnded
 
 from config import TG_API_ID, TG_API_HASH, SESSION_STRING
 
-
 logger = logging.getLogger("musicbot.player")
 
-
-# =========================================================
-# DATA LAGU
-# =========================================================
 
 @dataclass
 class Track:
@@ -30,31 +25,17 @@ class Track:
     source: str
 
 
-# =========================================================
-# MUSIC PLAYER
-# =========================================================
-
 class MusicPlayer:
 
     def __init__(self):
         self.client: Optional[Client] = None
         self.calls: Optional[PyTgCalls] = None
 
-        # Queue setiap grup
         self.queues = defaultdict(deque)
-
-        # Lagu yang sedang dimainkan
         self.current = {}
-
-        # Lock agar tidak terjadi dua proses play
-        # secara bersamaan dalam satu grup
         self.locks = defaultdict(asyncio.Lock)
 
         self.started = False
-
-    # =====================================================
-    # START
-    # =====================================================
 
     async def start(self):
 
@@ -77,11 +58,10 @@ class MusicPlayer:
 
         self.calls = PyTgCalls(self.client)
 
-        await self.calls.start()
+        # PyTgCalls 2.2.11
+        self.calls.start()
 
-        # -------------------------------------------------
-        # EVENT: LAGU SELESAI
-        # -------------------------------------------------
+        logger.info("PyTgCalls started.")
 
         @self.calls.on_update(tg_filters.stream_end())
         async def stream_end_handler(_, update: StreamEnded):
@@ -97,7 +77,6 @@ class MusicPlayer:
                 await self._play_next(chat_id)
 
             except Exception:
-
                 logger.exception(
                     "Failed playing next track in %s",
                     chat_id
@@ -113,9 +92,7 @@ class MusicPlayer:
 
         self.started = True
 
-    # =====================================================
-    # SHUTDOWN
-    # =====================================================
+        logger.info("Music engine ready.")
 
     async def shutdown(self):
 
@@ -144,10 +121,6 @@ class MusicPlayer:
 
         self.started = False
 
-    # =====================================================
-    # YT-DLP OPTIONS
-    # =====================================================
-
     @staticmethod
     def _search_options():
 
@@ -159,10 +132,6 @@ class MusicPlayer:
             "extract_flat": False,
         }
 
-    # =====================================================
-    # RESOLVE LAGU
-    # =====================================================
-
     async def _resolve(
         self,
         query: str,
@@ -173,10 +142,6 @@ class MusicPlayer:
 
             search_options = self._search_options()
 
-            # -------------------------------------------------
-            # URL LANGSUNG
-            # -------------------------------------------------
-
             if query.startswith(
                 (
                     "http://",
@@ -186,25 +151,13 @@ class MusicPlayer:
 
                 target = query
 
-            # -------------------------------------------------
-            # SOUNDCLOUD SEARCH
-            # -------------------------------------------------
-
             elif source == "soundcloud":
 
                 target = f"scsearch5:{query}"
 
-            # -------------------------------------------------
-            # YOUTUBE SEARCH
-            # -------------------------------------------------
-
             else:
 
                 target = f"ytsearch5:{query}"
-
-            # -------------------------------------------------
-            # SEARCH
-            # -------------------------------------------------
 
             with yt_dlp.YoutubeDL(
                 search_options
@@ -216,14 +169,9 @@ class MusicPlayer:
                 )
 
             if not info:
-
                 raise RuntimeError(
                     "Lagu tidak ditemukan."
                 )
-
-            # -------------------------------------------------
-            # SEARCH RESULT
-            # -------------------------------------------------
 
             if "entries" in info:
 
@@ -234,38 +182,22 @@ class MusicPlayer:
                 ]
 
                 if not entries:
-
                     raise RuntimeError(
                         "Tidak ada hasil lagu."
                     )
 
                 info = entries[0]
 
-            # -------------------------------------------------
-            # URL
-            # -------------------------------------------------
-
             webpage_url = (
                 info.get("webpage_url")
                 or info.get("original_url")
+                or query
             )
 
-            if not webpage_url:
-
-                webpage_url = query
-
-            # -------------------------------------------------
-            # AMBIL AUDIO STREAM
-            # -------------------------------------------------
-
             stream_options = {
-
                 "quiet": True,
-
                 "no_warnings": True,
-
                 "noplaylist": True,
-
                 "format": "bestaudio/best",
             }
 
@@ -279,49 +211,29 @@ class MusicPlayer:
                 )
 
             if not media:
-
                 raise RuntimeError(
                     "Gagal mengambil media."
                 )
 
-            # -------------------------------------------------
-            # STREAM URL
-            # -------------------------------------------------
-
             stream_url = media.get("url")
-
-            # -------------------------------------------------
-            # FALLBACK FORMAT
-            # -------------------------------------------------
 
             if not stream_url:
 
-                formats = media.get(
-                    "formats"
-                ) or []
+                formats = media.get("formats") or []
 
                 audio_formats = [
-
                     fmt
-
                     for fmt in formats
-
                     if fmt.get("url")
-
                     and fmt.get("acodec") != "none"
                 ]
 
                 if not audio_formats:
-
                     raise RuntimeError(
                         "Audio stream tidak tersedia."
                     )
 
                 stream_url = audio_formats[-1]["url"]
-
-            # -------------------------------------------------
-            # INFO LAGU
-            # -------------------------------------------------
 
             title = (
                 media.get("title")
@@ -334,27 +246,17 @@ class MusicPlayer:
             )
 
             return Track(
-
                 title=title,
-
                 webpage_url=webpage_url,
-
                 stream_url=stream_url,
-
                 duration=duration,
-
                 requested_by="Unknown",
-
                 source=source,
             )
 
         return await asyncio.to_thread(
             work
         )
-
-    # =====================================================
-    # TAMBAHKAN KE QUEUE
-    # =====================================================
 
     async def enqueue(
         self,
@@ -365,7 +267,6 @@ class MusicPlayer:
     ):
 
         if not self.started:
-
             raise RuntimeError(
                 "Music engine belum siap."
             )
@@ -380,18 +281,12 @@ class MusicPlayer:
         async with self.locks[chat_id]:
 
             was_empty = (
-
                 not self.current.get(chat_id)
-
                 and not self.queues[chat_id]
             )
 
-            self.queues[chat_id].append(
-                track
-            )
+            self.queues[chat_id].append(track)
 
-            # Jika belum ada lagu,
-            # langsung mulai.
             if was_empty:
 
                 await self._start_track_locked(
@@ -411,17 +306,10 @@ class MusicPlayer:
                 )
 
         return {
-
             "title": track.title,
-
             "requested_by": requested_by,
-
             "position": position,
         }
-
-    # =====================================================
-    # MULAI LAGU
-    # =====================================================
 
     async def _start_track_locked(
         self,
@@ -437,9 +325,7 @@ class MusicPlayer:
 
             return
 
-        track = (
-            self.queues[chat_id].popleft()
-        )
+        track = self.queues[chat_id].popleft()
 
         self.current[chat_id] = track
 
@@ -450,9 +336,7 @@ class MusicPlayer:
         )
 
         stream = MediaStream(
-
             track.stream_url,
-
             AudioQuality.HIGH,
         )
 
@@ -461,6 +345,11 @@ class MusicPlayer:
             await self.calls.play(
                 chat_id,
                 stream
+            )
+
+            logger.info(
+                "Playback started in chat %s",
+                chat_id
             )
 
         except Exception:
@@ -475,7 +364,6 @@ class MusicPlayer:
                 track.title
             )
 
-            # Coba lagu berikutnya
             if self.queues[chat_id]:
 
                 await self._play_next(
@@ -483,10 +371,6 @@ class MusicPlayer:
                 )
 
             raise
-
-    # =====================================================
-    # PLAY NEXT
-    # =====================================================
 
     async def _play_next(
         self,
@@ -500,17 +384,13 @@ class MusicPlayer:
                 None
             )
 
-            # Queue kosong
             if not self.queues[chat_id]:
 
                 try:
-
                     await self.calls.leave_call(
                         chat_id
                     )
-
                 except Exception:
-
                     pass
 
                 return
@@ -518,10 +398,6 @@ class MusicPlayer:
             await self._start_track_locked(
                 chat_id
             )
-
-    # =====================================================
-    # SKIP
-    # =====================================================
 
     async def skip(
         self,
@@ -544,7 +420,6 @@ class MusicPlayer:
                 )
 
             except Exception:
-
                 pass
 
             self.current.pop(
@@ -553,7 +428,6 @@ class MusicPlayer:
             )
 
             if not self.queues[chat_id]:
-
                 return None
 
             await self._start_track_locked(
@@ -564,10 +438,6 @@ class MusicPlayer:
                 chat_id
             ].title
 
-    # =====================================================
-    # STOP
-    # =====================================================
-
     async def stop(
         self,
         chat_id: int
@@ -575,9 +445,7 @@ class MusicPlayer:
 
         async with self.locks[chat_id]:
 
-            self.queues[
-                chat_id
-            ].clear()
+            self.queues[chat_id].clear()
 
             self.current.pop(
                 chat_id,
@@ -593,21 +461,14 @@ class MusicPlayer:
                     )
 
                 except Exception:
-
                     pass
-
-    # =====================================================
-    # PAUSE
-    # =====================================================
 
     async def pause(
         self,
         chat_id: int
     ):
 
-        if not self.current.get(
-            chat_id
-        ):
+        if not self.current.get(chat_id):
 
             raise RuntimeError(
                 "Tidak ada lagu yang sedang diputar."
@@ -617,18 +478,12 @@ class MusicPlayer:
             chat_id
         )
 
-    # =====================================================
-    # RESUME
-    # =====================================================
-
     async def resume(
         self,
         chat_id: int
     ):
 
-        if not self.current.get(
-            chat_id
-        ):
+        if not self.current.get(chat_id):
 
             raise RuntimeError(
                 "Tidak ada lagu yang sedang diputar."
@@ -637,10 +492,6 @@ class MusicPlayer:
         await self.calls.resume(
             chat_id
         )
-
-    # =====================================================
-    # TAMPILKAN QUEUE
-    # =====================================================
 
     def queue_text(
         self,
@@ -663,7 +514,6 @@ class MusicPlayer:
             "🎵 *Music Queue*"
         ]
 
-        # Lagu sekarang
         if current:
 
             lines.append(
@@ -671,7 +521,6 @@ class MusicPlayer:
                 f"{current.title}"
             )
 
-        # Queue
         if items:
 
             lines.append(
