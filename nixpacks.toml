@@ -2,7 +2,13 @@
 nixPkgs = ["ffmpeg"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = [
+    "which ffmpeg",
+    "which ffprobe",
+    "ffmpeg -version",
+    "ffprobe -version",
+    "pip install -r requirements.txt"
+]
 
 [start]
 cmd = "python main.py"
