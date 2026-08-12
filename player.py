@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Optional
@@ -18,78 +17,6 @@ logger = logging.getLogger("musicbot.player")
 
 
 # =========================================================
-# YOUTUBE COOKIES
-# =========================================================
-
-COOKIES_FILE = os.getenv("YOUTUBE_COOKIES_FILE", "cookies.txt")
-YOUTUBE_COOKIES = os.getenv("YOUTUBE_COOKIES", "").strip()
-
-
-def prepare_cookies():
-    """
-    Membuat cookies.txt dari Railway Variable YOUTUBE_COOKIES.
-    """
-
-    if not YOUTUBE_COOKIES:
-        logger.warning(
-            "YOUTUBE_COOKIES tidak ditemukan. "
-            "YouTube mungkin menolak request."
-        )
-        return
-
-    try:
-        with open(COOKIES_FILE, "w", encoding="utf-8") as file:
-            file.write(YOUTUBE_COOKIES)
-
-        logger.info("YouTube cookies berhasil disiapkan.")
-
-    except Exception as exc:
-        logger.exception(
-            "Gagal membuat file YouTube cookies: %s",
-            exc,
-        )
-
-
-prepare_cookies()
-
-
-# =========================================================
-# YT-DLP OPTIONS
-# =========================================================
-
-def ytdlp_options():
-    options = {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "extract_flat": False,
-        "geo_bypass": True,
-        "nocheckcertificate": True,
-
-        # Audio
-        "format": "bestaudio/best",
-
-        # Jangan download file.
-        "skip_download": True,
-
-        # User-Agent browser biasa.
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 "
-                "(KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            )
-        },
-    }
-
-    if os.path.exists(COOKIES_FILE):
-        options["cookiefile"] = COOKIES_FILE
-
-    return options
-
-
-# =========================================================
 # TRACK
 # =========================================================
 
@@ -101,6 +28,38 @@ class Track:
     duration: int
     requested_by: str
     source: str
+
+
+# =========================================================
+# YT-DLP
+# SOUNDCloud ONLY
+# =========================================================
+
+def ytdlp_options():
+    return {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "extract_flat": False,
+        "nocheckcertificate": True,
+        "geo_bypass": True,
+
+        # Ambil audio terbaik
+        "format": "bestaudio/best",
+
+        # Jangan download ke disk
+        "skip_download": True,
+
+        # User-Agent
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            )
+        },
+    }
 
 
 # =========================================================
@@ -151,16 +110,6 @@ class MusicPlayer:
         logger.info("TG_API_HASH ditemukan.")
         logger.info("SESSION_STRING ditemukan.")
 
-        if os.path.exists(COOKIES_FILE):
-            logger.info(
-                "YouTube cookies file ditemukan: %s",
-                COOKIES_FILE,
-            )
-        else:
-            logger.warning(
-                "cookies.txt tidak ditemukan."
-            )
-
         # -------------------------------------------------
         # PYROGRAM
         # -------------------------------------------------
@@ -182,9 +131,12 @@ class MusicPlayer:
                 exc,
             )
 
+            self.client = None
             raise
 
-        logger.info("Pyrogram connected.")
+        logger.info(
+            "Pyrogram connected."
+        )
 
         # -------------------------------------------------
         # ACCOUNT INFO
@@ -217,7 +169,9 @@ class MusicPlayer:
         # -------------------------------------------------
 
         try:
-            self.calls = PyTgCalls(self.client)
+            self.calls = PyTgCalls(
+                self.client
+            )
 
             await self.calls.start()
 
@@ -237,11 +191,12 @@ class MusicPlayer:
                 pass
 
             self.client = None
+            self.calls = None
 
             raise
 
         # -------------------------------------------------
-        # STREAM END EVENT
+        # STREAM END
         # -------------------------------------------------
 
         @self.calls.on_update(
@@ -258,7 +213,7 @@ class MusicPlayer:
 
             except Exception:
                 logger.exception(
-                    "Error saat memainkan lagu berikutnya."
+                    "Error memainkan lagu berikutnya."
                 )
 
         self.started = True
@@ -282,11 +237,11 @@ class MusicPlayer:
             for chat_id in list(
                 self.current.keys()
             ):
+
                 try:
                     await self.calls.leave_call(
                         chat_id
                     )
-
                 except Exception:
                     pass
 
@@ -299,7 +254,6 @@ class MusicPlayer:
 
             try:
                 await self.client.stop()
-
             except Exception:
                 pass
 
@@ -312,66 +266,51 @@ class MusicPlayer:
         )
 
     # =====================================================
-    # RESOLVE SONG
+    # RESOLVE SOUNDCloud
     # =====================================================
 
     async def _resolve(
         self,
         query: str,
-        source: str,
+        source: str = "soundcloud",
     ):
 
-        # Simpan query lokal supaya tidak pernah
-        # terkena UnboundLocalError.
         search_query = str(
             query or ""
         ).strip()
 
         if not search_query:
             raise ValueError(
-                "Judul lagu atau URL kosong."
+                "Judul lagu kosong."
             )
-
-        source = (
-            source or "youtube"
-        ).lower().strip()
 
         def work():
 
-            # ---------------------------------------------
-            # TARGET
-            # ---------------------------------------------
+            # -------------------------------------------------
+            # URL SOUNDCloud
+            # -------------------------------------------------
 
             if search_query.startswith(
                 ("http://", "https://")
             ):
                 target = search_query
 
-            elif source == "soundcloud":
-
+            else:
                 target = (
                     "scsearch5:"
                     + search_query
                 )
 
-            else:
-
-                target = (
-                    "ytsearch5:"
-                    + search_query
-                )
-
             logger.info(
-                "Resolving %s: %s",
-                source,
-                target,
+                "Searching SoundCloud: %s",
+                search_query,
             )
 
-            # ---------------------------------------------
-            # SEARCH
-            # ---------------------------------------------
-
             options = ytdlp_options()
+
+            # -------------------------------------------------
+            # SEARCH
+            # -------------------------------------------------
 
             with yt_dlp.YoutubeDL(
                 options
@@ -384,12 +323,12 @@ class MusicPlayer:
 
             if not info:
                 raise RuntimeError(
-                    "Lagu tidak ditemukan."
+                    "Lagu tidak ditemukan di SoundCloud."
                 )
 
-            # ---------------------------------------------
-            # SEARCH RESULT
-            # ---------------------------------------------
+            # -------------------------------------------------
+            # HASIL PENCARIAN
+            # -------------------------------------------------
 
             if "entries" in info:
 
@@ -404,29 +343,44 @@ class MusicPlayer:
 
                 if not entries:
                     raise RuntimeError(
-                        "Tidak ada hasil lagu."
+                        "Tidak ada hasil di SoundCloud."
                     )
 
                 info = entries[0]
 
-            # ---------------------------------------------
-            # WEBPAGE URL
-            # ---------------------------------------------
+            # -------------------------------------------------
+            # URL HALAMAN
+            # -------------------------------------------------
 
             webpage_url = (
                 info.get("webpage_url")
                 or info.get("original_url")
-                or info.get("url")
             )
 
             if not webpage_url:
-                raise RuntimeError(
-                    "URL lagu tidak ditemukan."
+
+                # Kadang hasil search memiliki
+                # URL langsung.
+                possible_url = info.get(
+                    "url"
                 )
 
-            # ---------------------------------------------
-            # EXTRACT AUDIO
-            # ---------------------------------------------
+                if possible_url:
+                    webpage_url = possible_url
+
+            if not webpage_url:
+                raise RuntimeError(
+                    "URL SoundCloud tidak ditemukan."
+                )
+
+            logger.info(
+                "SoundCloud result: %s",
+                webpage_url,
+            )
+
+            # -------------------------------------------------
+            # EXTRACT DETAIL
+            # -------------------------------------------------
 
             with yt_dlp.YoutubeDL(
                 options
@@ -439,19 +393,17 @@ class MusicPlayer:
 
             if not media:
                 raise RuntimeError(
-                    "Gagal mendapatkan informasi audio."
+                    "Gagal mendapatkan informasi lagu."
                 )
 
-            # ---------------------------------------------
+            # -------------------------------------------------
             # STREAM URL
-            # ---------------------------------------------
+            # -------------------------------------------------
 
             stream_url = media.get(
                 "url"
             )
 
-            # Kalau URL utama tidak tersedia,
-            # cari format audio.
             if not stream_url:
 
                 formats = media.get(
@@ -471,27 +423,25 @@ class MusicPlayer:
 
                     audio_formats.sort(
                         key=lambda fmt: (
-                            fmt.get(
-                                "abr"
-                            )
-                            or 0
+                            fmt.get("abr") or 0
                         ),
                         reverse=True,
                     )
 
                     stream_url = (
-                        audio_formats[0]
-                        .get("url")
+                        audio_formats[0].get(
+                            "url"
+                        )
                     )
 
             if not stream_url:
                 raise RuntimeError(
-                    "Audio stream tidak tersedia."
+                    "Audio SoundCloud tidak tersedia."
                 )
 
-            # ---------------------------------------------
-            # TRACK
-            # ---------------------------------------------
+            # -------------------------------------------------
+            # TRACK INFO
+            # -------------------------------------------------
 
             title = (
                 media.get("title")
@@ -511,7 +461,7 @@ class MusicPlayer:
                 stream_url=stream_url,
                 duration=duration,
                 requested_by="Unknown",
-                source=source,
+                source="soundcloud",
             )
 
         return await asyncio.to_thread(
@@ -527,7 +477,7 @@ class MusicPlayer:
         chat_id,
         query,
         requested_by,
-        source="youtube",
+        source="soundcloud",
     ):
 
         if not self.started:
@@ -540,9 +490,10 @@ class MusicPlayer:
                 "PyTgCalls belum tersedia."
             )
 
+        # SEMUA pencarian diarahkan ke SoundCloud
         track = await self._resolve(
             query=query,
-            source=source,
+            source="soundcloud",
         )
 
         track.requested_by = (
@@ -650,7 +601,7 @@ class MusicPlayer:
             )
 
             logger.exception(
-                "Gagal memainkan track: %s",
+                "Gagal memainkan: %s",
                 track.title,
             )
 
@@ -684,7 +635,6 @@ class MusicPlayer:
                         await self.calls.leave_call(
                             chat_id
                         )
-
                     except Exception:
                         pass
 
@@ -716,29 +666,6 @@ class MusicPlayer:
             chat_id
         ]:
 
-            if not self.current.get(
-                chat_id
-            ):
-
-                if not self.queues[
-                    chat_id
-                ]:
-                    return None
-
-                await self._start_track_locked(
-                    chat_id
-                )
-
-                current = self.current.get(
-                    chat_id
-                )
-
-                return (
-                    current.title
-                    if current
-                    else None
-                )
-
             self.current.pop(
                 chat_id,
                 None,
@@ -754,7 +681,6 @@ class MusicPlayer:
                         await self.calls.leave_call(
                             chat_id
                         )
-
                     except Exception:
                         pass
 
@@ -802,7 +728,6 @@ class MusicPlayer:
                     await self.calls.leave_call(
                         chat_id
                     )
-
                 except Exception:
                     pass
 
@@ -843,7 +768,7 @@ class MusicPlayer:
         )
 
     # =====================================================
-    # QUEUE TEXT
+    # QUEUE
     # =====================================================
 
     def queue_text(
