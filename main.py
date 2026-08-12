@@ -1,13 +1,19 @@
 import asyncio
 import logging
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+)
 from telegram.ext import (
     Application,
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from config import BOT_TOKEN, validate_config
@@ -20,10 +26,15 @@ from player import MusicPlayer
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    format=(
+        "%(asctime)s | %(levelname)s | "
+        "%(name)s | %(message)s"
+    ),
 )
 
-logger = logging.getLogger("musicbot")
+logger = logging.getLogger(
+    "musicbot"
+)
 
 
 # =========================================================
@@ -34,7 +45,7 @@ player = MusicPlayer()
 
 
 # =========================================================
-# MENU UTAMA
+# MENU
 # =========================================================
 
 MENU = InlineKeyboardMarkup(
@@ -64,29 +75,33 @@ MENU = InlineKeyboardMarkup(
 
 
 # =========================================================
-# PESAN WELCOME
+# WELCOME
 # =========================================================
 
 def welcome_text():
 
     return (
         "🎵 *Telegram Music Bot*\n\n"
-        "Bot musik untuk mencari dan memutar lagu "
+        "Cari lagu dan putar langsung "
         "ke Voice Chat.\n\n"
 
-        "🎧 *Perintah:*\n"
-        "• `/play judul lagu` — cari di YouTube\n"
-        "• `/sc judul lagu` — cari di SoundCloud\n"
-        "• `/play URL` — putar URL\n"
+        "🎧 *Cara menggunakan:*\n"
+        "• `/play Mangu`\n"
+        "• `/sc Mangu`\n"
+        "• Bisa juga cukup ketik:\n"
+        "  `Mangu`\n\n"
+
+        "🎮 *Perintah:*\n"
+        "• `/play judul` — cari lagu\n"
+        "• `/sc judul` — cari SoundCloud\n"
         "• `/skip` — lagu berikutnya\n"
         "• `/queue` — lihat antrean\n"
         "• `/stop` — hentikan musik\n"
         "• `/pause` — jeda musik\n"
         "• `/resume` — lanjutkan musik\n\n"
 
-        "⚠️ Akun Telegram yang digunakan oleh "
-        "Pyrogram harus sudah berada di grup "
-        "dan memiliki akses untuk masuk Voice Chat."
+        "⚠️ Akun musik harus berada di grup "
+        "dan mempunyai akses ke Voice Chat."
     )
 
 
@@ -129,6 +144,101 @@ async def help_command(
 
 
 # =========================================================
+# PLAY ENGINE
+# =========================================================
+
+async def process_song(
+    update: Update,
+    song_query: str,
+):
+
+    if not update.message:
+        return
+
+    query_text = (
+        song_query or ""
+    ).strip()
+
+    if not query_text:
+        return
+
+    status = await update.message.reply_text(
+        f"🔎 Mencari *{query_text}*...\n"
+        "⏳ Tunggu sebentar.",
+        parse_mode="Markdown",
+    )
+
+    try:
+
+        user = update.effective_user
+
+        requested_by = (
+            user.full_name
+            if user
+            else "Unknown"
+        )
+
+        result = await player.enqueue(
+            chat_id=update.effective_chat.id,
+            query=query_text,
+            requested_by=requested_by,
+            source="soundcloud",
+        )
+
+        if result["position"] == 0:
+
+            message = (
+                "✅ *Lagu ditemukan!*\n\n"
+                f"🎵 *{result['title']}*\n"
+                f"👤 Request: {result['requested_by']}\n\n"
+                "▶️ *Sedang diputar di Voice Chat.*"
+            )
+
+        else:
+
+            message = (
+                "✅ *Lagu masuk queue!*\n\n"
+                f"🎵 *{result['title']}*\n"
+                f"👤 Request: {result['requested_by']}\n"
+                f"📍 Posisi: {result['position']}\n\n"
+                "⏳ Akan diputar setelah lagu sebelumnya."
+            )
+
+        await status.edit_text(
+            message,
+            parse_mode="Markdown",
+            reply_markup=MENU,
+        )
+
+    except Exception as exc:
+
+        logger.exception(
+            "Song processing failed"
+        )
+
+        error_text = str(
+            exc
+        )
+
+        # Jangan tampilkan traceback panjang
+        # ke user.
+        if len(error_text) > 500:
+            error_text = (
+                error_text[:500]
+                + "..."
+            )
+
+        await status.edit_text(
+            "❌ *Gagal memutar lagu.*\n\n"
+            f"`{type(exc).__name__}: "
+            f"{error_text}`\n\n"
+            "Pastikan Voice Chat aktif dan "
+            "akun musik sudah berada di grup.",
+            parse_mode="Markdown",
+        )
+
+
+# =========================================================
 # /PLAY
 # =========================================================
 
@@ -147,53 +257,19 @@ async def play_command(
     if not query:
 
         await update.message.reply_text(
-            "❌ Kamu belum memasukkan judul lagu.\n\n"
+            "❌ Masukkan judul lagu.\n\n"
             "Contoh:\n"
-            "`/play Alan Walker Faded`\n"
-            "`/play The Weeknd Blinding Lights`\n"
-            "`/play https://youtube.com/...`",
+            "`/play Mangu`\n"
+            "`/play Hindia Secukupnya`",
             parse_mode="Markdown",
         )
 
         return
 
-    status = await update.message.reply_text(
-        "🔎 Mencari lagu...\n"
-        "⏳ Tunggu sebentar."
+    await process_song(
+        update,
+        query,
     )
-
-    try:
-
-        result = await player.enqueue(
-            chat_id=update.effective_chat.id,
-            query=query,
-            requested_by=update.effective_user.full_name,
-            source="youtube",
-        )
-
-        await status.edit_text(
-            "✅ *Lagu ditemukan!*\n\n"
-            f"🎵 *{result['title']}*\n"
-            f"👤 Request: {result['requested_by']}\n"
-            f"📍 Posisi queue: {result['position']}\n\n"
-            "▶️ Musik sedang diproses.",
-            parse_mode="Markdown",
-            reply_markup=MENU,
-        )
-
-    except Exception as exc:
-
-        logger.exception(
-            "Play command failed"
-        )
-
-        await status.edit_text(
-            "❌ *Gagal memutar lagu.*\n\n"
-            f"`{type(exc).__name__}: {exc}`\n\n"
-            "Pastikan Voice Chat grup sudah aktif "
-            "dan akun musik sudah berada di grup.",
-            parse_mode="Markdown",
-        )
 
 
 # =========================================================
@@ -215,50 +291,49 @@ async def sc_command(
     if not query:
 
         await update.message.reply_text(
-            "❌ Masukkan judul lagu SoundCloud.\n\n"
+            "❌ Masukkan judul lagu.\n\n"
             "Contoh:\n"
-            "`/sc The Weeknd`\n"
-            "`/sc Alan Walker`",
+            "`/sc Mangu`\n"
+            "`/sc The Weeknd`",
             parse_mode="Markdown",
         )
 
         return
 
-    status = await update.message.reply_text(
-        "🔎 Mencari di SoundCloud...\n"
-        "⏳ Tunggu sebentar."
+    await process_song(
+        update,
+        query,
     )
 
-    try:
 
-        result = await player.enqueue(
-            chat_id=update.effective_chat.id,
-            query=query,
-            requested_by=update.effective_user.full_name,
-            source="soundcloud",
-        )
+# =========================================================
+# PESAN BIASA = CARI LAGU
+# =========================================================
 
-        await status.edit_text(
-            "✅ *SoundCloud ditemukan!*\n\n"
-            f"🎵 *{result['title']}*\n"
-            f"👤 Request: {result['requested_by']}\n"
-            f"📍 Posisi queue: {result['position']}\n\n"
-            "▶️ Musik sedang diproses.",
-            parse_mode="Markdown",
-            reply_markup=MENU,
-        )
+async def text_song_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
 
-    except Exception as exc:
+    if not update.message:
+        return
 
-        logger.exception(
-            "SoundCloud command failed"
-        )
+    text = (
+        update.message.text or ""
+    ).strip()
 
-        await status.edit_text(
-            "❌ *Gagal memutar SoundCloud.*\n\n"
-            f"`{type(exc).__name__}: {exc}`",
-            parse_mode="Markdown",
-        )
+    if not text:
+        return
+
+    # Jangan proses pesan yang terlalu pendek.
+    if len(text) < 2:
+        return
+
+    # Langsung dianggap sebagai pencarian lagu.
+    await process_song(
+        update,
+        text,
+    )
 
 
 # =========================================================
@@ -283,8 +358,7 @@ async def skip_command(
 
             await update.message.reply_text(
                 "⏭ *Skip berhasil!*\n\n"
-                f"▶️ Sekarang memainkan:\n"
-                f"*{title}*",
+                f"▶️ *{title}*",
                 parse_mode="Markdown",
             )
 
@@ -295,6 +369,10 @@ async def skip_command(
             )
 
     except Exception as exc:
+
+        logger.exception(
+            "Skip failed"
+        )
 
         await update.message.reply_text(
             f"❌ Gagal skip:\n`{exc}`",
@@ -322,11 +400,15 @@ async def stop_command(
 
         await update.message.reply_text(
             "⏹ *Musik dihentikan.*\n\n"
-            "Queue juga sudah dikosongkan.",
+            "Queue sudah dikosongkan.",
             parse_mode="Markdown",
         )
 
     except Exception as exc:
+
+        logger.exception(
+            "Stop failed"
+        )
 
         await update.message.reply_text(
             f"❌ Gagal stop:\n`{exc}`",
@@ -432,7 +514,12 @@ async def button_handler(
 
     await query.answer()
 
-    chat_id = query.message.chat.id
+    if not query.message:
+        return
+
+    chat_id = (
+        query.message.chat.id
+    )
 
     # -----------------------------------------------------
     # CARI LAGU
@@ -442,12 +529,13 @@ async def button_handler(
 
         await query.message.reply_text(
             "🎵 *Cara mencari lagu:*\n\n"
-            "`/play Faded`\n"
-            "`/play The Weeknd`\n\n"
-            "🎧 SoundCloud:\n"
-            "`/sc The Weeknd`\n\n"
-            "🔗 URL:\n"
-            "`/play https://youtube.com/...`",
+            "Bisa pakai:\n"
+            "`/play Mangu`\n\n"
+            "atau cukup kirim:\n"
+            "`Mangu`\n\n"
+            "Bot akan mencari lagu di "
+            "SoundCloud dan memutarnya "
+            "ke Voice Chat.",
             parse_mode="Markdown",
         )
 
@@ -458,7 +546,9 @@ async def button_handler(
     elif query.data == "queue":
 
         await query.message.reply_text(
-            player.queue_text(chat_id),
+            player.queue_text(
+                chat_id
+            ),
             parse_mode="Markdown",
         )
 
@@ -490,8 +580,13 @@ async def button_handler(
 
         except Exception as exc:
 
+            logger.exception(
+                "Button skip failed"
+            )
+
             await query.message.reply_text(
-                f"❌ {exc}"
+                f"❌ Gagal skip:\n`{exc}`",
+                parse_mode="Markdown",
             )
 
     # -----------------------------------------------------
@@ -513,7 +608,7 @@ async def button_handler(
         except Exception as exc:
 
             await query.message.reply_text(
-                f"❌ {exc}"
+                f"❌ Gagal stop:\n`{exc}`"
             )
 
 
@@ -569,7 +664,10 @@ def build_application():
         .build()
     )
 
-    # Commands
+    # -----------------------------------------------------
+    # COMMANDS
+    # -----------------------------------------------------
+
     application.add_handler(
         CommandHandler(
             "start",
@@ -633,10 +731,25 @@ def build_application():
         )
     )
 
-    # Buttons
+    # -----------------------------------------------------
+    # BUTTONS
+    # -----------------------------------------------------
+
     application.add_handler(
         CallbackQueryHandler(
             button_handler
+        )
+    )
+
+    # -----------------------------------------------------
+    # TEXT BIASA = CARI LAGU
+    # -----------------------------------------------------
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & ~filters.COMMAND,
+            text_song_handler,
         )
     )
 
@@ -649,7 +762,6 @@ def build_application():
 
 async def run_bot():
 
-    # Pastikan variable Railway lengkap
     validate_config()
 
     application = build_application()
@@ -660,7 +772,9 @@ async def run_bot():
 
     await application.initialize()
 
-    await post_init(application)
+    await post_init(
+        application
+    )
 
     await application.start()
 
@@ -674,7 +788,6 @@ async def run_bot():
 
     try:
 
-        # Menjaga proses tetap hidup
         await asyncio.Event().wait()
 
     finally:
@@ -683,11 +796,20 @@ async def run_bot():
             "Stopping Telegram polling..."
         )
 
-        await application.updater.stop()
+        try:
+            await application.updater.stop()
+        except Exception:
+            pass
 
-        await application.stop()
+        try:
+            await application.stop()
+        except Exception:
+            pass
 
-        await application.shutdown()
+        try:
+            await application.shutdown()
+        except Exception:
+            pass
 
 
 # =========================================================
