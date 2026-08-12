@@ -1,8 +1,14 @@
 [phases.setup]
-aptPkgs = ["ffmpeg"]
+aptPkgs = ["ffmpeg", "ffmpegthumbnailer"]
 
 [phases.install]
-cmds = ["pip install --no-cache-dir -r requirements.txt"]
+cmds = [
+    "which ffmpeg",
+    "which ffprobe",
+    "ffmpeg -version",
+    "ffprobe -version",
+    "pip install --no-cache-dir -r requirements.txt"
+]
 
 [start]
 cmd = "python main.py"
