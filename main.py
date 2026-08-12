@@ -1,823 +1,424 @@
+import asyncio
 import logging
-from html import escape
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
-from telegram.constants import ParseMode
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
-    CommandHandler,
+    ApplicationBuilder,
     CallbackQueryHandler,
+    CommandHandler,
     ContextTypes,
 )
 
-from config import BOT_TOKEN
-from database import (
-    init_database,
-    add_user,
-    add_group,
-    add_history,
-    get_user_count,
-    get_group_count,
-    set_volume,
-    set_loop,
-)
-from player import (
-    MediaExtractor,
-    Media,
-    player,
-)
+from config import BOT_TOKEN, validate_config
+from player import MusicPlayer
 
 
-# ============================================================
+# =========================================================
 # LOGGING
-# ============================================================
+# =========================================================
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("musicbot")
 
 
-# ============================================================
-# DATABASE
-# ============================================================
+# =========================================================
+# MUSIC PLAYER
+# =========================================================
 
-init_database()
+player = MusicPlayer()
 
 
-# ============================================================
-# MENU
-# ============================================================
+# =========================================================
+# MENU UTAMA
+# =========================================================
 
-def main_menu():
-
-    keyboard = [
+MENU = InlineKeyboardMarkup(
+    [
         [
             InlineKeyboardButton(
-                "🎵 MUSIC",
-                callback_data="music",
+                "🔎 Cari Lagu",
+                callback_data="help_play",
             ),
             InlineKeyboardButton(
-                "🎬 WATCH",
-                callback_data="watch",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📋 QUEUE",
+                "📜 Queue",
                 callback_data="queue",
             ),
-            InlineKeyboardButton(
-                "🎧 NOW PLAYING",
-                callback_data="now",
-            ),
         ],
         [
             InlineKeyboardButton(
-                "⏸ PAUSE",
-                callback_data="pause",
-            ),
-            InlineKeyboardButton(
-                "▶️ RESUME",
-                callback_data="resume",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "⏭ SKIP",
+                "⏭ Skip",
                 callback_data="skip",
             ),
             InlineKeyboardButton(
-                "⏹ STOP",
+                "⏹ Stop",
                 callback_data="stop",
             ),
         ],
-        [
-            InlineKeyboardButton(
-                "🔀 SHUFFLE",
-                callback_data="shuffle",
-            ),
-            InlineKeyboardButton(
-                "🔁 LOOP",
-                callback_data="loop",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📖 HELP",
-                callback_data="help",
-            ),
-        ],
     ]
-
-    return InlineKeyboardMarkup(
-        keyboard
-    )
+)
 
 
-# ============================================================
-# HELPERS
-# ============================================================
+# =========================================================
+# PESAN WELCOME
+# =========================================================
 
-def get_user_info(update: Update):
-
-    user = update.effective_user
-
-    if not user:
-        return 0, "Unknown"
-
-    name = (
-        user.first_name
-        or user.username
-        or "Unknown"
-    )
-
-    return user.id, name
-
-
-def is_group(update: Update):
-
-    chat = update.effective_chat
-
-    if not chat:
-        return False
-
-    return chat.type in (
-        "group",
-        "supergroup",
-    )
-
-
-def format_duration(seconds):
-
-    if not seconds:
-        return "Unknown"
-
-    seconds = int(seconds)
-
-    minutes = seconds // 60
-
-    seconds = seconds % 60
-
-    hours = minutes // 60
-
-    minutes = minutes % 60
-
-    if hours:
-
-        return (
-            f"{hours}:{minutes:02d}:{seconds:02d}"
-        )
+def welcome_text():
 
     return (
-        f"{minutes}:{seconds:02d}"
+        "🎵 *Telegram Music Bot*\n\n"
+        "Bot musik untuk mencari dan memutar lagu "
+        "ke Voice Chat.\n\n"
+
+        "🎧 *Perintah:*\n"
+        "• `/play judul lagu` — cari di YouTube\n"
+        "• `/sc judul lagu` — cari di SoundCloud\n"
+        "• `/play URL` — putar URL\n"
+        "• `/skip` — lagu berikutnya\n"
+        "• `/queue` — lihat antrean\n"
+        "• `/stop` — hentikan musik\n"
+        "• `/pause` — jeda musik\n"
+        "• `/resume` — lanjutkan musik\n\n"
+
+        "⚠️ Akun Telegram yang digunakan oleh "
+        "Pyrogram harus sudah berada di grup "
+        "dan memiliki akses untuk masuk Voice Chat."
     )
 
 
-# ============================================================
+# =========================================================
 # /START
-# ============================================================
+# =========================================================
 
 async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
-    user = update.effective_user
-    chat = update.effective_chat
-
-    if user:
-
-        add_user(user)
-
-    if chat and chat.type in (
-        "group",
-        "supergroup",
-    ):
-
-        add_group(chat)
-
-    text = (
-        "🎵 <b>KAIRO MUSIC + WATCH</b>\n\n"
-        "Music & Video Bot untuk Telegram.\n\n"
-
-        "🎵 <b>Music</b>\n"
-        "<code>/play judul lagu</code>\n\n"
-
-        "🎬 <b>Watch</b>\n"
-        "<code>/vplay judul video</code>\n\n"
-
-        "🌐 Mendukung pencarian YouTube "
-        "dan SoundCloud.\n\n"
-
-        "Gunakan tombol di bawah."
-    )
-
-    await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=main_menu(),
-    )
-
-
-# ============================================================
-# /PLAY
-# ============================================================
-
-async def play_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not is_group(update):
-
-        await update.message.reply_text(
-            "❌ Gunakan /play di dalam grup."
-        )
-
-        return
-
-    if not context.args:
-
-        await update.message.reply_text(
-            "🎵 Contoh:\n\n"
-            "<code>/play Bruno Mars Just The Way You Are</code>",
-            parse_mode=ParseMode.HTML,
-        )
-
-        return
-
-    query = " ".join(
-        context.args
-    )
-
-    user_id, user_name = (
-        get_user_info(update)
-    )
-
-    status = await update.message.reply_text(
-        "🔎 <b>Mencari lagu...</b>\n\n"
-        f"🎵 {escape(query)}",
-        parse_mode=ParseMode.HTML,
-    )
-
-    info = await __import__(
-        "asyncio"
-    ).to_thread(
-        MediaExtractor.search_audio,
-        query,
-    )
-
-    if not info:
-
-        await status.edit_text(
-            "❌ Lagu tidak ditemukan."
-        )
-
-        return
-
-    media = MediaExtractor.make_media(
-        info,
-        "audio",
-        user_id,
-        user_name,
-    )
-
-    if not media:
-
-        await status.edit_text(
-            "❌ Stream lagu tidak tersedia."
-        )
-
-        return
-
-    position = await player.add(
-        update.effective_chat.id,
-        media,
-    )
-
-    add_history(
-        user_id=user_id,
-        chat_id=update.effective_chat.id,
-        title=media.title,
-        url=media.url,
-        media_type="audio",
-    )
-
-    text = (
-        "🎵 <b>DITAMBAHKAN KE QUEUE</b>\n\n"
-        f"🎧 <b>{escape(media.title)}</b>\n"
-        f"⏱ {format_duration(media.duration)}\n"
-        f"👤 {escape(user_name)}\n\n"
-        f"📋 Posisi queue: <b>{position}</b>"
-    )
-
-    await status.edit_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=main_menu(),
-    )
-
-
-# ============================================================
-# /VPLAY
-# ============================================================
-
-async def vplay_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not is_group(update):
-
-        await update.message.reply_text(
-            "❌ Gunakan /vplay di dalam grup."
-        )
-
-        return
-
-    if not context.args:
-
-        await update.message.reply_text(
-            "🎬 Contoh:\n\n"
-            "<code>/vplay Naruto opening 1</code>",
-            parse_mode=ParseMode.HTML,
-        )
-
-        return
-
-    query = " ".join(
-        context.args
-    )
-
-    user_id, user_name = (
-        get_user_info(update)
-    )
-
-    status = await update.message.reply_text(
-        "🔎 <b>Mencari video...</b>\n\n"
-        f"🎬 {escape(query)}",
-        parse_mode=ParseMode.HTML,
-    )
-
-    info = await __import__(
-        "asyncio"
-    ).to_thread(
-        MediaExtractor.search_video,
-        query,
-    )
-
-    if not info:
-
-        await status.edit_text(
-            "❌ Video tidak ditemukan."
-        )
-
-        return
-
-    media = MediaExtractor.make_media(
-        info,
-        "video",
-        user_id,
-        user_name,
-    )
-
-    if not media:
-
-        await status.edit_text(
-            "❌ Stream video tidak tersedia."
-        )
-
-        return
-
-    position = await player.add(
-        update.effective_chat.id,
-        media,
-    )
-
-    add_history(
-        user_id=user_id,
-        chat_id=update.effective_chat.id,
-        title=media.title,
-        url=media.url,
-        media_type="video",
-    )
-
-    text = (
-        "🎬 <b>VIDEO DITAMBAHKAN</b>\n\n"
-        f"🎞 <b>{escape(media.title)}</b>\n"
-        f"⏱ {format_duration(media.duration)}\n"
-        f"👤 {escape(user_name)}\n\n"
-        f"📋 Posisi queue: <b>{position}</b>"
-    )
-
-    await status.edit_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=main_menu(),
-    )
-
-
-# ============================================================
-# /PAUSE
-# ============================================================
-
-async def pause_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    chat_id = update.effective_chat.id
-
-    if player.pause(chat_id):
-
-        await update.message.reply_text(
-            "⏸️ <b>Player dijeda.</b>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=main_menu(),
-        )
-
-    else:
-
-        await update.message.reply_text(
-            "❌ Tidak ada media yang sedang diputar."
-        )
-
-
-# ============================================================
-# /RESUME
-# ============================================================
-
-async def resume_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    chat_id = update.effective_chat.id
-
-    if player.resume(chat_id):
-
-        await update.message.reply_text(
-            "▶️ <b>Player dilanjutkan.</b>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=main_menu(),
-        )
-
-    else:
-
-        await update.message.reply_text(
-            "❌ Player tidak sedang pause."
-        )
-
-
-# ============================================================
-# /SKIP
-# ============================================================
-
-async def skip_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    chat_id = update.effective_chat.id
-
-    media = await player.skip(
-        chat_id
-    )
-
-    if not media:
-
-        await update.message.reply_text(
-            "⏭️ Queue kosong."
-        )
-
+    if not update.message:
         return
 
     await update.message.reply_text(
-        "⏭️ <b>Berikutnya:</b>\n\n"
-        f"🎧 {escape(media.title)}",
-        parse_mode=ParseMode.HTML,
-        reply_markup=main_menu(),
+        welcome_text(),
+        parse_mode="Markdown",
+        reply_markup=MENU,
     )
 
 
-# ============================================================
-# /STOP
-# ============================================================
-
-async def stop_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    chat_id = update.effective_chat.id
-
-    player.stop(chat_id)
-
-    await update.message.reply_text(
-        "⏹️ <b>Player dihentikan.</b>\n\n"
-        "Queue dikosongkan.",
-        parse_mode=ParseMode.HTML,
-        reply_markup=main_menu(),
-    )
-
-
-# ============================================================
-# /QUEUE
-# ============================================================
-
-async def queue_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    chat_id = update.effective_chat.id
-
-    current = player.get_current(
-        chat_id
-    )
-
-    queue = player.get_queue(
-        chat_id
-    )
-
-    if not current and not queue:
-
-        await update.message.reply_text(
-            "📋 Queue kosong."
-        )
-
-        return
-
-    text = "📋 <b>QUEUE</b>\n\n"
-
-    if current:
-
-        icon = (
-            "🎬"
-            if current.media_type == "video"
-            else "🎵"
-        )
-
-        text += (
-            f"{icon} <b>NOW PLAYING</b>\n"
-            f"{escape(current.title)}\n"
-            f"👤 {escape(current.requested_name)}\n\n"
-        )
-
-    if queue:
-
-        text += "<b>UP NEXT</b>\n"
-
-        for index, media in enumerate(
-            queue[:20],
-            start=1,
-        ):
-
-            icon = (
-                "🎬"
-                if media.media_type == "video"
-                else "🎵"
-            )
-
-            text += (
-                f"{index}. {icon} "
-                f"{escape(media.title)}\n"
-            )
-
-    await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# /NOW
-# ============================================================
-
-async def now_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    chat_id = update.effective_chat.id
-
-    media = player.get_current(
-        chat_id
-    )
-
-    if not media:
-
-        await update.message.reply_text(
-            "🎧 Tidak ada media yang sedang diputar."
-        )
-
-        return
-
-    icon = (
-        "🎬"
-        if media.media_type == "video"
-        else "🎵"
-    )
-
-    await update.message.reply_text(
-        f"{icon} <b>NOW PLAYING</b>\n\n"
-        f"🎧 {escape(media.title)}\n"
-        f"⏱ {format_duration(media.duration)}\n"
-        f"👤 {escape(media.requested_name)}",
-        parse_mode=ParseMode.HTML,
-        reply_markup=main_menu(),
-    )
-
-
-# ============================================================
-# /SHUFFLE
-# ============================================================
-
-async def shuffle_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if player.shuffle(
-        update.effective_chat.id
-    ):
-
-        await update.message.reply_text(
-            "🔀 Queue berhasil diacak."
-        )
-
-    else:
-
-        await update.message.reply_text(
-            "❌ Minimal 2 media diperlukan."
-        )
-
-
-# ============================================================
-# /LOOP
-# ============================================================
-
-async def loop_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    chat_id = update.effective_chat.id
-
-    current = player.loop.get(
-        chat_id,
-        False,
-    )
-
-    new_value = not current
-
-    player.set_loop(
-        chat_id,
-        new_value,
-    )
-
-    set_loop(
-        chat_id,
-        new_value,
-    )
-
-    status = (
-        "AKTIF"
-        if new_value
-        else "NONAKTIF"
-    )
-
-    await update.message.reply_text(
-        f"🔁 Loop: <b>{status}</b>",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# /VOLUME
-# ============================================================
-
-async def volume_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    chat_id = update.effective_chat.id
-
-    if not context.args:
-
-        await update.message.reply_text(
-            f"🔊 Volume: "
-            f"<b>{player.get_volume(chat_id)}%</b>\n\n"
-            "Contoh:\n"
-            "<code>/volume 50</code>",
-            parse_mode=ParseMode.HTML,
-        )
-
-        return
-
-    try:
-
-        volume = int(
-            context.args[0]
-        )
-
-    except ValueError:
-
-        await update.message.reply_text(
-            "❌ Masukkan angka 1-100."
-        )
-
-        return
-
-    if volume < 1 or volume > 100:
-
-        await update.message.reply_text(
-            "❌ Volume harus 1-100."
-        )
-
-        return
-
-    player.set_volume(
-        chat_id,
-        volume,
-    )
-
-    set_volume(
-        chat_id,
-        volume,
-    )
-
-    await update.message.reply_text(
-        f"🔊 Volume: <b>{volume}%</b>",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# /STATS
-# ============================================================
-
-async def stats_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    users = get_user_count()
-
-    groups = get_group_count()
-
-    await update.message.reply_text(
-        "📊 <b>KAIRO STATISTICS</b>\n\n"
-        f"👤 Users: <b>{users}</b>\n"
-        f"👥 Groups: <b>{groups}</b>",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
+# =========================================================
 # /HELP
-# ============================================================
+# =========================================================
 
 async def help_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
+    if not update.message:
+        return
+
     await update.message.reply_text(
-        "📖 <b>KAIRO MUSIC + WATCH</b>\n\n"
-
-        "🎵 <b>MUSIC</b>\n"
-        "<code>/play judul lagu</code>\n"
-        "<code>/pause</code>\n"
-        "<code>/resume</code>\n"
-        "<code>/skip</code>\n"
-        "<code>/stop</code>\n"
-        "<code>/queue</code>\n"
-        "<code>/now</code>\n"
-        "<code>/shuffle</code>\n"
-        "<code>/loop</code>\n"
-        "<code>/volume 50</code>\n\n"
-
-        "🎬 <b>WATCH</b>\n"
-        "<code>/vplay judul video</code>\n\n"
-
-        "📊 <b>INFO</b>\n"
-        "<code>/stats</code>",
-        parse_mode=ParseMode.HTML,
+        welcome_text(),
+        parse_mode="Markdown",
+        reply_markup=MENU,
     )
 
 
-# ============================================================
+# =========================================================
+# /PLAY
+# =========================================================
+
+async def play_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
+    query = " ".join(
+        context.args
+    ).strip()
+
+    if not query:
+
+        await update.message.reply_text(
+            "❌ Kamu belum memasukkan judul lagu.\n\n"
+            "Contoh:\n"
+            "`/play Alan Walker Faded`\n"
+            "`/play The Weeknd Blinding Lights`\n"
+            "`/play https://youtube.com/...`",
+            parse_mode="Markdown",
+        )
+
+        return
+
+    status = await update.message.reply_text(
+        "🔎 Mencari lagu...\n"
+        "⏳ Tunggu sebentar."
+    )
+
+    try:
+
+        result = await player.enqueue(
+            chat_id=update.effective_chat.id,
+            query=query,
+            requested_by=update.effective_user.full_name,
+            source="youtube",
+        )
+
+        await status.edit_text(
+            "✅ *Lagu ditemukan!*\n\n"
+            f"🎵 *{result['title']}*\n"
+            f"👤 Request: {result['requested_by']}\n"
+            f"📍 Posisi queue: {result['position']}\n\n"
+            "▶️ Musik sedang diproses.",
+            parse_mode="Markdown",
+            reply_markup=MENU,
+        )
+
+    except Exception as exc:
+
+        logger.exception(
+            "Play command failed"
+        )
+
+        await status.edit_text(
+            "❌ *Gagal memutar lagu.*\n\n"
+            f"`{type(exc).__name__}: {exc}`\n\n"
+            "Pastikan Voice Chat grup sudah aktif "
+            "dan akun musik sudah berada di grup.",
+            parse_mode="Markdown",
+        )
+
+
+# =========================================================
+# /SC
+# =========================================================
+
+async def sc_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
+    query = " ".join(
+        context.args
+    ).strip()
+
+    if not query:
+
+        await update.message.reply_text(
+            "❌ Masukkan judul lagu SoundCloud.\n\n"
+            "Contoh:\n"
+            "`/sc The Weeknd`\n"
+            "`/sc Alan Walker`",
+            parse_mode="Markdown",
+        )
+
+        return
+
+    status = await update.message.reply_text(
+        "🔎 Mencari di SoundCloud...\n"
+        "⏳ Tunggu sebentar."
+    )
+
+    try:
+
+        result = await player.enqueue(
+            chat_id=update.effective_chat.id,
+            query=query,
+            requested_by=update.effective_user.full_name,
+            source="soundcloud",
+        )
+
+        await status.edit_text(
+            "✅ *SoundCloud ditemukan!*\n\n"
+            f"🎵 *{result['title']}*\n"
+            f"👤 Request: {result['requested_by']}\n"
+            f"📍 Posisi queue: {result['position']}\n\n"
+            "▶️ Musik sedang diproses.",
+            parse_mode="Markdown",
+            reply_markup=MENU,
+        )
+
+    except Exception as exc:
+
+        logger.exception(
+            "SoundCloud command failed"
+        )
+
+        await status.edit_text(
+            "❌ *Gagal memutar SoundCloud.*\n\n"
+            f"`{type(exc).__name__}: {exc}`",
+            parse_mode="Markdown",
+        )
+
+
+# =========================================================
+# /SKIP
+# =========================================================
+
+async def skip_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
+    try:
+
+        title = await player.skip(
+            update.effective_chat.id
+        )
+
+        if title:
+
+            await update.message.reply_text(
+                "⏭ *Skip berhasil!*\n\n"
+                f"▶️ Sekarang memainkan:\n"
+                f"*{title}*",
+                parse_mode="Markdown",
+            )
+
+        else:
+
+            await update.message.reply_text(
+                "⏭ Queue kosong."
+            )
+
+    except Exception as exc:
+
+        await update.message.reply_text(
+            f"❌ Gagal skip:\n`{exc}`",
+            parse_mode="Markdown",
+        )
+
+
+# =========================================================
+# /STOP
+# =========================================================
+
+async def stop_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
+    try:
+
+        await player.stop(
+            update.effective_chat.id
+        )
+
+        await update.message.reply_text(
+            "⏹ *Musik dihentikan.*\n\n"
+            "Queue juga sudah dikosongkan.",
+            parse_mode="Markdown",
+        )
+
+    except Exception as exc:
+
+        await update.message.reply_text(
+            f"❌ Gagal stop:\n`{exc}`",
+            parse_mode="Markdown",
+        )
+
+
+# =========================================================
+# /PAUSE
+# =========================================================
+
+async def pause_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
+    try:
+
+        await player.pause(
+            update.effective_chat.id
+        )
+
+        await update.message.reply_text(
+            "⏸ Musik dijeda."
+        )
+
+    except Exception as exc:
+
+        await update.message.reply_text(
+            f"❌ Gagal pause:\n`{exc}`",
+            parse_mode="Markdown",
+        )
+
+
+# =========================================================
+# /RESUME
+# =========================================================
+
+async def resume_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
+    try:
+
+        await player.resume(
+            update.effective_chat.id
+        )
+
+        await update.message.reply_text(
+            "▶️ Musik dilanjutkan."
+        )
+
+    except Exception as exc:
+
+        await update.message.reply_text(
+            f"❌ Gagal resume:\n`{exc}`",
+            parse_mode="Markdown",
+        )
+
+
+# =========================================================
+# /QUEUE
+# =========================================================
+
+async def queue_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
+    text = player.queue_text(
+        update.effective_chat.id
+    )
+
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+    )
+
+
+# =========================================================
 # BUTTON HANDLER
-# ============================================================
+# =========================================================
 
 async def button_handler(
     update: Update,
@@ -826,182 +427,160 @@ async def button_handler(
 
     query = update.callback_query
 
+    if not query:
+        return
+
     await query.answer()
 
-    chat_id = query.message.chat_id
+    chat_id = query.message.chat.id
 
-    action = query.data
+    # -----------------------------------------------------
+    # CARI LAGU
+    # -----------------------------------------------------
 
-    if action == "pause":
+    if query.data == "help_play":
 
-        player.pause(chat_id)
-
-        await query.answer(
-            "⏸ Pause"
+        await query.message.reply_text(
+            "🎵 *Cara mencari lagu:*\n\n"
+            "`/play Faded`\n"
+            "`/play The Weeknd`\n\n"
+            "🎧 SoundCloud:\n"
+            "`/sc The Weeknd`\n\n"
+            "🔗 URL:\n"
+            "`/play https://youtube.com/...`",
+            parse_mode="Markdown",
         )
 
-    elif action == "resume":
+    # -----------------------------------------------------
+    # QUEUE
+    # -----------------------------------------------------
 
-        player.resume(chat_id)
+    elif query.data == "queue":
 
-        await query.answer(
-            "▶️ Resume"
+        await query.message.reply_text(
+            player.queue_text(chat_id),
+            parse_mode="Markdown",
         )
 
-    elif action == "skip":
+    # -----------------------------------------------------
+    # SKIP
+    # -----------------------------------------------------
 
-        await player.skip(
-            chat_id
-        )
+    elif query.data == "skip":
 
-        await query.answer(
-            "⏭ Skip"
-        )
+        try:
 
-    elif action == "stop":
-
-        player.stop(chat_id)
-
-        await query.answer(
-            "⏹ Stop"
-        )
-
-    elif action == "shuffle":
-
-        player.shuffle(chat_id)
-
-        await query.answer(
-            "🔀 Shuffle"
-        )
-
-    elif action == "loop":
-
-        current = player.loop.get(
-            chat_id,
-            False,
-        )
-
-        player.set_loop(
-            chat_id,
-            not current,
-        )
-
-        await query.answer(
-            "🔁 Loop"
-        )
-
-    elif action == "queue":
-
-        queue = player.get_queue(
-            chat_id
-        )
-
-        if not queue:
-
-            await query.answer(
-                "📋 Queue kosong.",
-                show_alert=True,
+            title = await player.skip(
+                chat_id
             )
 
-            return
+            if title:
 
-        text = "📋 QUEUE\n\n"
+                await query.message.reply_text(
+                    "⏭ *Skip berhasil!*\n\n"
+                    f"▶️ *{title}*",
+                    parse_mode="Markdown",
+                )
 
-        for index, media in enumerate(
-            queue[:10],
-            start=1,
-        ):
+            else:
 
-            text += (
-                f"{index}. "
-                f"{media.title}\n"
+                await query.message.reply_text(
+                    "⏭ Queue kosong."
+                )
+
+        except Exception as exc:
+
+            await query.message.reply_text(
+                f"❌ {exc}"
             )
 
-        await query.message.reply_text(
-            text
-        )
+    # -----------------------------------------------------
+    # STOP
+    # -----------------------------------------------------
 
-    elif action == "now":
+    elif query.data == "stop":
 
-        media = player.get_current(
-            chat_id
-        )
+        try:
 
-        if not media:
-
-            await query.answer(
-                "Tidak ada media.",
-                show_alert=True,
+            await player.stop(
+                chat_id
             )
 
-            return
+            await query.message.reply_text(
+                "⏹ Musik dihentikan."
+            )
 
-        await query.message.reply_text(
-            f"🎧 {media.title}"
-        )
+        except Exception as exc:
 
-    elif action == "music":
-
-        await query.message.reply_text(
-            "🎵 Music:\n\n"
-            "<code>/play judul lagu</code>",
-            parse_mode=ParseMode.HTML,
-        )
-
-    elif action == "watch":
-
-        await query.message.reply_text(
-            "🎬 Watch:\n\n"
-            "<code>/vplay judul video</code>",
-            parse_mode=ParseMode.HTML,
-        )
-
-    elif action == "help":
-
-        await query.message.reply_text(
-            "📖 Gunakan /help untuk melihat semua command."
-        )
+            await query.message.reply_text(
+                f"❌ {exc}"
+            )
 
 
-# ============================================================
-# ERROR
-# ============================================================
+# =========================================================
+# PLAYER START
+# =========================================================
 
-async def error_handler(
-    update,
-    context,
+async def post_init(
+    application: Application,
 ):
 
-    logger.error(
-        "BOT ERROR",
-        exc_info=context.error,
+    logger.info(
+        "Starting music engine..."
+    )
+
+    await player.start()
+
+    logger.info(
+        "Music engine started."
     )
 
 
-# ============================================================
-# MAIN
-# ============================================================
+# =========================================================
+# PLAYER SHUTDOWN
+# =========================================================
 
-def main():
+async def post_shutdown(
+    application: Application,
+):
 
-    if not BOT_TOKEN:
+    logger.info(
+        "Stopping music engine..."
+    )
 
-        raise RuntimeError(
-            "BOT_TOKEN belum diatur."
-        )
+    await player.shutdown()
+
+    logger.info(
+        "Music engine stopped."
+    )
+
+
+# =========================================================
+# BUILD APPLICATION
+# =========================================================
+
+def build_application():
 
     application = (
-        Application.builder()
+        ApplicationBuilder()
         .token(BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
         .build()
     )
 
     # Commands
-
     application.add_handler(
         CommandHandler(
             "start",
             start,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "help",
+            help_command,
         )
     )
 
@@ -1014,22 +593,8 @@ def main():
 
     application.add_handler(
         CommandHandler(
-            "vplay",
-            vplay_command,
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "pause",
-            pause_command,
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "resume",
-            resume_command,
+            "sc",
+            sc_command,
         )
     )
 
@@ -1049,75 +614,94 @@ def main():
 
     application.add_handler(
         CommandHandler(
+            "pause",
+            pause_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "resume",
+            resume_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
             "queue",
             queue_command,
         )
     )
 
-    application.add_handler(
-        CommandHandler(
-            "now",
-            now_command,
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "shuffle",
-            shuffle_command,
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "loop",
-            loop_command,
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "volume",
-            volume_command,
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "stats",
-            stats_command,
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "help",
-            help_command,
-        )
-    )
-
     # Buttons
-
     application.add_handler(
         CallbackQueryHandler(
             button_handler
         )
     )
 
-    # Error
+    return application
 
-    application.add_error_handler(
-        error_handler
+
+# =========================================================
+# MAIN
+# =========================================================
+
+async def run_bot():
+
+    # Pastikan variable Railway lengkap
+    validate_config()
+
+    application = build_application()
+
+    logger.info(
+        "Initializing Telegram bot..."
+    )
+
+    await application.initialize()
+
+    await application.start()
+
+    await application.updater.start_polling(
+        drop_pending_updates=True
     )
 
     logger.info(
-        "KAIRO MUSIC + WATCH STARTING..."
+        "BOT ONLINE."
     )
 
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES
-    )
+    try:
 
+        # Menjaga proses tetap hidup
+        await asyncio.Event().wait()
+
+    finally:
+
+        logger.info(
+            "Stopping Telegram polling..."
+        )
+
+        await application.updater.stop()
+
+        await application.stop()
+
+        await application.shutdown()
+
+
+# =========================================================
+# ENTRY POINT
+# =========================================================
 
 if __name__ == "__main__":
-    main()
+
+    try:
+
+        asyncio.run(
+            run_bot()
+        )
+
+    except KeyboardInterrupt:
+
+        logger.info(
+            "Bot stopped manually."
+        )
