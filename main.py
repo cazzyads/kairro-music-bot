@@ -660,6 +660,8 @@ async def run_bot():
 
     await application.initialize()
 
+    await post_init(application)
+
     await application.start()
 
     await application.updater.start_polling(
