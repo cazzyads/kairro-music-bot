@@ -77,7 +77,7 @@ class MusicPlayer:
 
         self.calls = PyTgCalls(self.client)
 
-        self.calls.start()
+        await self.calls.start()
 
         # -------------------------------------------------
         # EVENT: LAGU SELESAI
