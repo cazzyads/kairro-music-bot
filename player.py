@@ -1,937 +1,698 @@
-```python
 import asyncio
 import logging
-import random
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Optional
 
-
 import yt_dlp
+from pyrogram import Client
+from pytgcalls import PyTgCalls
+from pytgcalls import filters as tg_filters
+from pytgcalls.types import AudioQuality, MediaStream, StreamEnded
+
+from config import TG_API_ID, TG_API_HASH, SESSION_STRING
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("musicbot.player")
 
 
-# ============================================================
-# MEDIA
-# ============================================================
+# =========================================================
+# DATA LAGU
+# =========================================================
 
 @dataclass
-class Media:
+class Track:
     title: str
-    url: str
+    webpage_url: str
     stream_url: str
-    media_type: str
+    duration: int
+    requested_by: str
+    source: str
 
-    duration: int = 0
 
-    thumbnail: Optional[str] = None
+# =========================================================
+# MUSIC PLAYER
+# =========================================================
 
-    webpage_url: Optional[str] = None
-
-    requested_by: int = 0
-
-    requested_name: str = "Unknown"
-
-
-# ============================================================
-# YOUTUBE / SOUNDCLOUD EXTRACTOR
-# ============================================================
-
-class MediaExtractor:
-
-    # --------------------------------------------------------
-    # AUDIO OPTIONS
-    # --------------------------------------------------------
-
-    AUDIO_OPTIONS = {
-        "quiet": True,
-        "no_warnings": True,
-
-        "format": "bestaudio/best",
-
-        "noplaylist": True,
-
-        "skip_download": True,
-
-        "source_address": "0.0.0.0",
-    }
-
-    # --------------------------------------------------------
-    # VIDEO OPTIONS
-    # --------------------------------------------------------
-
-    VIDEO_OPTIONS = {
-        "quiet": True,
-        "no_warnings": True,
-
-        "format": "bestvideo+bestaudio/best",
-
-        "noplaylist": True,
-
-        "skip_download": True,
-
-        "source_address": "0.0.0.0",
-    }
-
-    # ========================================================
-    # SEARCH AUDIO
-    # ========================================================
-
-    @staticmethod
-    def search_audio(query: str):
-
-        if not query:
-            return None
-
-        query = query.strip()
-
-        options = dict(
-            MediaExtractor.AUDIO_OPTIONS
-        )
-
-        # Search YouTube jika bukan URL
-        if not query.startswith("http://") and not query.startswith("https://"):
-            query = f"ytsearch1:{query}"
-
-        try:
-
-            with yt_dlp.YoutubeDL(options) as ydl:
-
-                info = ydl.extract_info(
-                    query,
-                    download=False
-                )
-
-                if not info:
-                    return None
-
-                # Jika hasil pencarian
-                if "entries" in info:
-
-                    entries = info.get(
-                        "entries"
-                    ) or []
-
-                    if not entries:
-                        return None
-
-                    info = entries[0]
-
-                return info
-
-        except Exception as error:
-
-            logger.exception(
-                "Audio extraction failed: %s",
-                error
-            )
-
-            return None
-
-    # ========================================================
-    # SEARCH VIDEO
-    # ========================================================
-
-    @staticmethod
-    def search_video(query: str):
-
-        if not query:
-            return None
-
-        query = query.strip()
-
-        options = dict(
-            MediaExtractor.VIDEO_OPTIONS
-        )
-
-        # Search YouTube jika bukan URL
-        if not query.startswith("http://") and not query.startswith("https://"):
-            query = f"ytsearch1:{query}"
-
-        try:
-
-            with yt_dlp.YoutubeDL(options) as ydl:
-
-                info = ydl.extract_info(
-                    query,
-                    download=False
-                )
-
-                if not info:
-                    return None
-
-                # Jika hasil pencarian
-                if "entries" in info:
-
-                    entries = info.get(
-                        "entries"
-                    ) or []
-
-                    if not entries:
-                        return None
-
-                    info = entries[0]
-
-                return info
-
-        except Exception as error:
-
-            logger.exception(
-                "Video extraction failed: %s",
-                error
-            )
-
-            return None
-
-    # ========================================================
-    # SEARCH
-    # ========================================================
-
-    @staticmethod
-    def search(
-        query: str,
-        media_type: str = "audio"
-    ):
-
-        if media_type == "video":
-
-            return MediaExtractor.search_video(
-                query
-            )
-
-        return MediaExtractor.search_audio(
-            query
-        )
-
-    # ========================================================
-    # MAKE MEDIA
-    # ========================================================
-
-    @staticmethod
-    def make_media(
-        info,
-        media_type: str,
-        user_id: int,
-        user_name: str,
-    ):
-
-        if not info:
-            return None
-
-        # ----------------------------------------------------
-        # TITLE
-        # ----------------------------------------------------
-
-        title = info.get(
-            "title"
-        ) or "Unknown"
-
-        # ----------------------------------------------------
-        # WEBPAGE URL
-        # ----------------------------------------------------
-
-        webpage_url = (
-            info.get("webpage_url")
-            or info.get("original_url")
-        )
-
-        # ----------------------------------------------------
-        # STREAM URL
-        # ----------------------------------------------------
-
-        stream_url = info.get(
-            "url"
-        )
-
-        # ----------------------------------------------------
-        # DURATION
-        # ----------------------------------------------------
-
-        duration = info.get(
-            "duration"
-        ) or 0
-
-        try:
-            duration = int(duration)
-
-        except (
-            TypeError,
-            ValueError
-        ):
-
-            duration = 0
-
-        # ----------------------------------------------------
-        # THUMBNAIL
-        # ----------------------------------------------------
-
-        thumbnail = info.get(
-            "thumbnail"
-        )
-
-        # ----------------------------------------------------
-        # CHECK STREAM
-        # ----------------------------------------------------
-
-        if not stream_url:
-
-            logger.warning(
-                "No stream URL for: %s",
-                title
-            )
-
-            return None
-
-        # ----------------------------------------------------
-        # CREATE MEDIA
-        # ----------------------------------------------------
-
-        return Media(
-
-            title=title,
-
-            url=(
-                webpage_url
-                or stream_url
-            ),
-
-            stream_url=stream_url,
-
-            media_type=media_type,
-
-            duration=duration,
-
-            thumbnail=thumbnail,
-
-            webpage_url=webpage_url,
-
-            requested_by=user_id,
-
-            requested_name=(
-                user_name
-                or "Unknown"
-            ),
-        )
-
-    # ========================================================
-    # SEARCH AND CREATE MEDIA
-    # ========================================================
-
-    @staticmethod
-    def get_media(
-        query: str,
-        media_type: str,
-        user_id: int,
-        user_name: str,
-    ):
-
-        info = MediaExtractor.search(
-            query,
-            media_type
-        )
-
-        if not info:
-            return None
-
-        return MediaExtractor.make_media(
-            info=info,
-            media_type=media_type,
-            user_id=user_id,
-            user_name=user_name,
-        )
-
-
-# ============================================================
-# QUEUE PLAYER
-# ============================================================
-
-class QueuePlayer:
+class MusicPlayer:
 
     def __init__(self):
+        self.client: Optional[Client] = None
+        self.calls: Optional[PyTgCalls] = None
 
-        # ----------------------------------------------------
-        # Queue per chat
-        # ----------------------------------------------------
+        # Queue setiap grup
+        self.queues = defaultdict(deque)
 
-        self.queues = {}
-
-        # ----------------------------------------------------
-        # Current media per chat
-        # ----------------------------------------------------
-
+        # Lagu yang sedang dimainkan
         self.current = {}
 
-        # ----------------------------------------------------
-        # Pause status
-        # ----------------------------------------------------
+        # Lock agar tidak terjadi dua proses play
+        # secara bersamaan dalam satu grup
+        self.locks = defaultdict(asyncio.Lock)
 
-        self.paused = {}
+        self.started = False
 
-        # ----------------------------------------------------
-        # Loop status
-        # ----------------------------------------------------
+    # =====================================================
+    # START
+    # =====================================================
 
-        self.loop = {}
+    async def start(self):
 
-        # ----------------------------------------------------
-        # Volume
-        # ----------------------------------------------------
+        if self.started:
+            return
 
-        self.volume = {}
+        logger.info("Starting Pyrogram...")
 
-        # ----------------------------------------------------
-        # Async locks
-        # ----------------------------------------------------
+        self.client = Client(
+            "music_user",
+            api_id=TG_API_ID,
+            api_hash=TG_API_HASH,
+            session_string=SESSION_STRING,
+            in_memory=True,
+        )
 
-        self.locks = {}
+        await self.client.start()
 
-    # ========================================================
-    # INTERNAL LOCK
-    # ========================================================
+        logger.info("Pyrogram connected.")
 
-    def _lock(
+        self.calls = PyTgCalls(self.client)
+
+        self.calls.start()
+
+        # -------------------------------------------------
+        # EVENT: LAGU SELESAI
+        # -------------------------------------------------
+
+        @self.calls.on_update(tg_filters.stream_end())
+        async def stream_end_handler(_, update: StreamEnded):
+
+            chat_id = update.chat_id
+
+            logger.info(
+                "Stream ended in chat %s",
+                chat_id
+            )
+
+            try:
+                await self._play_next(chat_id)
+
+            except Exception:
+
+                logger.exception(
+                    "Failed playing next track in %s",
+                    chat_id
+                )
+
+        me = await self.client.get_me()
+
+        logger.info(
+            "Telegram account: %s (%s)",
+            me.first_name,
+            me.id
+        )
+
+        self.started = True
+
+    # =====================================================
+    # SHUTDOWN
+    # =====================================================
+
+    async def shutdown(self):
+
+        if self.calls:
+
+            for chat_id in list(self.current.keys()):
+
+                try:
+                    await self.calls.leave_call(chat_id)
+
+                except Exception:
+                    logger.exception(
+                        "Failed leaving voice chat %s",
+                        chat_id
+                    )
+
+        if self.client:
+
+            try:
+                await self.client.stop()
+
+            except Exception:
+                logger.exception(
+                    "Failed stopping Pyrogram"
+                )
+
+        self.started = False
+
+    # =====================================================
+    # YT-DLP OPTIONS
+    # =====================================================
+
+    @staticmethod
+    def _search_options():
+
+        return {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "skip_download": True,
+            "extract_flat": False,
+        }
+
+    # =====================================================
+    # RESOLVE LAGU
+    # =====================================================
+
+    async def _resolve(
         self,
-        chat_id: int
-    ):
+        query: str,
+        source: str
+    ) -> Track:
 
-        if chat_id not in self.locks:
+        def work():
 
-            self.locks[chat_id] = asyncio.Lock()
+            search_options = self._search_options()
 
-        return self.locks[chat_id]
+            # -------------------------------------------------
+            # URL LANGSUNG
+            # -------------------------------------------------
 
-    # ========================================================
-    # INTERNAL QUEUE
-    # ========================================================
+            if query.startswith(
+                (
+                    "http://",
+                    "https://"
+                )
+            ):
 
-    def _queue(
-        self,
-        chat_id: int
-    ):
+                target = query
 
-        if chat_id not in self.queues:
+            # -------------------------------------------------
+            # SOUNDCLOUD SEARCH
+            # -------------------------------------------------
 
-            self.queues[chat_id] = []
+            elif source == "soundcloud":
 
-        return self.queues[chat_id]
+                target = f"scsearch5:{query}"
 
-    # ========================================================
-    # ADD
-    # ========================================================
+            # -------------------------------------------------
+            # YOUTUBE SEARCH
+            # -------------------------------------------------
 
-    async def add(
+            else:
+
+                target = f"ytsearch5:{query}"
+
+            # -------------------------------------------------
+            # SEARCH
+            # -------------------------------------------------
+
+            with yt_dlp.YoutubeDL(
+                search_options
+            ) as ydl:
+
+                info = ydl.extract_info(
+                    target,
+                    download=False
+                )
+
+            if not info:
+
+                raise RuntimeError(
+                    "Lagu tidak ditemukan."
+                )
+
+            # -------------------------------------------------
+            # SEARCH RESULT
+            # -------------------------------------------------
+
+            if "entries" in info:
+
+                entries = [
+                    item
+                    for item in info["entries"]
+                    if item
+                ]
+
+                if not entries:
+
+                    raise RuntimeError(
+                        "Tidak ada hasil lagu."
+                    )
+
+                info = entries[0]
+
+            # -------------------------------------------------
+            # URL
+            # -------------------------------------------------
+
+            webpage_url = (
+                info.get("webpage_url")
+                or info.get("original_url")
+            )
+
+            if not webpage_url:
+
+                webpage_url = query
+
+            # -------------------------------------------------
+            # AMBIL AUDIO STREAM
+            # -------------------------------------------------
+
+            stream_options = {
+
+                "quiet": True,
+
+                "no_warnings": True,
+
+                "noplaylist": True,
+
+                "format": "bestaudio/best",
+            }
+
+            with yt_dlp.YoutubeDL(
+                stream_options
+            ) as ydl:
+
+                media = ydl.extract_info(
+                    webpage_url,
+                    download=False
+                )
+
+            if not media:
+
+                raise RuntimeError(
+                    "Gagal mengambil media."
+                )
+
+            # -------------------------------------------------
+            # STREAM URL
+            # -------------------------------------------------
+
+            stream_url = media.get("url")
+
+            # -------------------------------------------------
+            # FALLBACK FORMAT
+            # -------------------------------------------------
+
+            if not stream_url:
+
+                formats = media.get(
+                    "formats"
+                ) or []
+
+                audio_formats = [
+
+                    fmt
+
+                    for fmt in formats
+
+                    if fmt.get("url")
+
+                    and fmt.get("acodec") != "none"
+                ]
+
+                if not audio_formats:
+
+                    raise RuntimeError(
+                        "Audio stream tidak tersedia."
+                    )
+
+                stream_url = audio_formats[-1]["url"]
+
+            # -------------------------------------------------
+            # INFO LAGU
+            # -------------------------------------------------
+
+            title = (
+                media.get("title")
+                or "Unknown"
+            )
+
+            duration = int(
+                media.get("duration")
+                or 0
+            )
+
+            return Track(
+
+                title=title,
+
+                webpage_url=webpage_url,
+
+                stream_url=stream_url,
+
+                duration=duration,
+
+                requested_by="Unknown",
+
+                source=source,
+            )
+
+        return await asyncio.to_thread(
+            work
+        )
+
+    # =====================================================
+    # TAMBAHKAN KE QUEUE
+    # =====================================================
+
+    async def enqueue(
         self,
         chat_id: int,
-        media: Media
+        query: str,
+        requested_by: str,
+        source: str
     ):
 
-        async with self._lock(chat_id):
+        if not self.started:
 
-            queue = self._queue(
-                chat_id
+            raise RuntimeError(
+                "Music engine belum siap."
             )
 
-            queue.append(
-                media
+        track = await self._resolve(
+            query,
+            source
+        )
+
+        track.requested_by = requested_by
+
+        async with self.locks[chat_id]:
+
+            was_empty = (
+
+                not self.current.get(chat_id)
+
+                and not self.queues[chat_id]
             )
 
-            return len(queue)
-
-    # ========================================================
-    # ADD MULTIPLE
-    # ========================================================
-
-    async def add_many(
-        self,
-        chat_id: int,
-        medias: list
-    ):
-
-        async with self._lock(chat_id):
-
-            queue = self._queue(
-                chat_id
+            self.queues[chat_id].append(
+                track
             )
 
-            queue.extend(
-                medias
-            )
+            # Jika belum ada lagu,
+            # langsung mulai.
+            if was_empty:
 
-            return len(queue)
-
-    # ========================================================
-    # NEXT
-    # ========================================================
-
-    async def next(
-        self,
-        chat_id: int
-    ):
-
-        async with self._lock(chat_id):
-
-            queue = self._queue(
-                chat_id
-            )
-
-            # Tidak ada lagu
-            if not queue:
-
-                self.current[
+                await self._start_track_locked(
                     chat_id
-                ] = None
+                )
 
-                self.paused[
+            if self.current.get(chat_id):
+
+                position = (
+                    len(self.queues[chat_id]) + 1
+                )
+
+            else:
+
+                position = (
+                    len(self.queues[chat_id])
+                )
+
+        return {
+
+            "title": track.title,
+
+            "requested_by": requested_by,
+
+            "position": position,
+        }
+
+    # =====================================================
+    # MULAI LAGU
+    # =====================================================
+
+    async def _start_track_locked(
+        self,
+        chat_id: int
+    ):
+
+        if not self.queues[chat_id]:
+
+            self.current.pop(
+                chat_id,
+                None
+            )
+
+            return
+
+        track = (
+            self.queues[chat_id].popleft()
+        )
+
+        self.current[chat_id] = track
+
+        logger.info(
+            "Playing '%s' in chat %s",
+            track.title,
+            chat_id
+        )
+
+        stream = MediaStream(
+
+            track.stream_url,
+
+            AudioQuality.HIGH,
+        )
+
+        try:
+
+            await self.calls.play(
+                chat_id,
+                stream
+            )
+
+        except Exception:
+
+            self.current.pop(
+                chat_id,
+                None
+            )
+
+            logger.exception(
+                "Failed to play '%s'",
+                track.title
+            )
+
+            # Coba lagu berikutnya
+            if self.queues[chat_id]:
+
+                await self._play_next(
                     chat_id
-                ] = False
+                )
 
-                return None
+            raise
 
-            # Ambil lagu pertama
-            media = queue.pop(0)
+    # =====================================================
+    # PLAY NEXT
+    # =====================================================
 
-            self.current[
+    async def _play_next(
+        self,
+        chat_id: int
+    ):
+
+        async with self.locks[chat_id]:
+
+            self.current.pop(
+                chat_id,
+                None
+            )
+
+            # Queue kosong
+            if not self.queues[chat_id]:
+
+                try:
+
+                    await self.calls.leave_call(
+                        chat_id
+                    )
+
+                except Exception:
+
+                    pass
+
+                return
+
+            await self._start_track_locked(
                 chat_id
-            ] = media
+            )
 
-            self.paused[
-                chat_id
-            ] = False
-
-            return media
-
-    # ========================================================
-    # CURRENT
-    # ========================================================
-
-    def get_current(
-        self,
-        chat_id: int
-    ):
-
-        return self.current.get(
-            chat_id
-        )
-
-    # ========================================================
-    # QUEUE
-    # ========================================================
-
-    def get_queue(
-        self,
-        chat_id: int
-    ):
-
-        return list(
-            self._queue(chat_id)
-        )
-
-    # ========================================================
-    # QUEUE LENGTH
-    # ========================================================
-
-    def queue_length(
-        self,
-        chat_id: int
-    ):
-
-        return len(
-            self._queue(chat_id)
-        )
-
-    # ========================================================
-    # PAUSE
-    # ========================================================
-
-    def pause(
-        self,
-        chat_id: int
-    ):
-
-        if not self.current.get(
-            chat_id
-        ):
-
-            return False
-
-        if self.paused.get(
-            chat_id,
-            False
-        ):
-
-            return False
-
-        self.paused[
-            chat_id
-        ] = True
-
-        return True
-
-    # ========================================================
-    # RESUME
-    # ========================================================
-
-    def resume(
-        self,
-        chat_id: int
-    ):
-
-        if not self.current.get(
-            chat_id
-        ):
-
-            return False
-
-        if not self.paused.get(
-            chat_id,
-            False
-        ):
-
-            return False
-
-        self.paused[
-            chat_id
-        ] = False
-
-        return True
-
-    # ========================================================
-    # IS PAUSED
-    # ========================================================
-
-    def is_paused(
-        self,
-        chat_id: int
-    ):
-
-        return self.paused.get(
-            chat_id,
-            False
-        )
-
-    # ========================================================
+    # =====================================================
     # SKIP
-    # ========================================================
+    # =====================================================
 
     async def skip(
         self,
         chat_id: int
     ):
 
-        return await self.next(
-            chat_id
-        )
+        async with self.locks[chat_id]:
 
-    # ========================================================
-    # STOP
-    # ========================================================
+            if (
+                not self.current.get(chat_id)
+                and not self.queues[chat_id]
+            ):
 
-    def stop(
-        self,
-        chat_id: int
-    ):
+                return None
 
-        self.queues[
-            chat_id
-        ] = []
+            try:
 
-        self.current[
-            chat_id
-        ] = None
+                await self.calls.leave_call(
+                    chat_id
+                )
 
-        self.paused[
-            chat_id
-        ] = False
+            except Exception:
 
-        return True
+                pass
 
-    # ========================================================
-    # CLEAR QUEUE
-    # ========================================================
-
-    def clear_queue(
-        self,
-        chat_id: int
-    ):
-
-        queue = self._queue(
-            chat_id
-        )
-
-        count = len(queue)
-
-        queue.clear()
-
-        return count
-
-    # ========================================================
-    # SHUFFLE
-    # ========================================================
-
-    def shuffle(
-        self,
-        chat_id: int
-    ):
-
-        queue = self._queue(
-            chat_id
-        )
-
-        if len(queue) < 2:
-
-            return False
-
-        random.shuffle(
-            queue
-        )
-
-        return True
-
-    # ========================================================
-    # REMOVE FROM QUEUE
-    # ========================================================
-
-    def remove(
-        self,
-        chat_id: int,
-        index: int
-    ):
-
-        queue = self._queue(
-            chat_id
-        )
-
-        if index < 0:
-            return None
-
-        if index >= len(queue):
-            return None
-
-        return queue.pop(
-            index
-        )
-
-    # ========================================================
-    # LOOP
-    # ========================================================
-
-    def set_loop(
-        self,
-        chat_id: int,
-        enabled: bool
-    ):
-
-        self.loop[
-            chat_id
-        ] = bool(enabled)
-
-        return self.loop[
-            chat_id
-        ]
-
-    # ========================================================
-    # TOGGLE LOOP
-    # ========================================================
-
-    def toggle_loop(
-        self,
-        chat_id: int
-    ):
-
-        current = self.loop.get(
-            chat_id,
-            False
-        )
-
-        self.loop[
-            chat_id
-        ] = not current
-
-        return self.loop[
-            chat_id
-        ]
-
-    # ========================================================
-    # GET LOOP
-    # ========================================================
-
-    def get_loop(
-        self,
-        chat_id: int
-    ):
-
-        return self.loop.get(
-            chat_id,
-            False
-        )
-
-    # ========================================================
-    # VOLUME
-    # ========================================================
-
-    def set_volume(
-        self,
-        chat_id: int,
-        volume: int
-    ):
-
-        try:
-
-            volume = int(
-                volume
+            self.current.pop(
+                chat_id,
+                None
             )
 
-        except (
-            TypeError,
-            ValueError
+            if not self.queues[chat_id]:
+
+                return None
+
+            await self._start_track_locked(
+                chat_id
+            )
+
+            return self.current[
+                chat_id
+            ].title
+
+    # =====================================================
+    # STOP
+    # =====================================================
+
+    async def stop(
+        self,
+        chat_id: int
+    ):
+
+        async with self.locks[chat_id]:
+
+            self.queues[
+                chat_id
+            ].clear()
+
+            self.current.pop(
+                chat_id,
+                None
+            )
+
+            if self.calls:
+
+                try:
+
+                    await self.calls.leave_call(
+                        chat_id
+                    )
+
+                except Exception:
+
+                    pass
+
+    # =====================================================
+    # PAUSE
+    # =====================================================
+
+    async def pause(
+        self,
+        chat_id: int
+    ):
+
+        if not self.current.get(
+            chat_id
         ):
 
-            volume = 100
-
-        volume = max(
-            1,
-            min(
-                100,
-                volume
+            raise RuntimeError(
+                "Tidak ada lagu yang sedang diputar."
             )
+
+        await self.calls.pause(
+            chat_id
         )
 
-        self.volume[
-            chat_id
-        ] = volume
+    # =====================================================
+    # RESUME
+    # =====================================================
 
-        return volume
-
-    # ========================================================
-    # GET VOLUME
-    # ========================================================
-
-    def get_volume(
+    async def resume(
         self,
         chat_id: int
     ):
 
-        return self.volume.get(
-            chat_id,
-            100
-        )
+        if not self.current.get(
+            chat_id
+        ):
 
-    # ========================================================
-    # INCREASE VOLUME
-    # ========================================================
+            raise RuntimeError(
+                "Tidak ada lagu yang sedang diputar."
+            )
 
-    def volume_up(
-        self,
-        chat_id: int,
-        amount: int = 10
-    ):
-
-        current = self.get_volume(
+        await self.calls.resume(
             chat_id
         )
 
-        return self.set_volume(
-            chat_id,
-            current + amount
-        )
+    # =====================================================
+    # TAMPILKAN QUEUE
+    # =====================================================
 
-    # ========================================================
-    # DECREASE VOLUME
-    # ========================================================
-
-    def volume_down(
-        self,
-        chat_id: int,
-        amount: int = 10
-    ):
-
-        current = self.get_volume(
-            chat_id
-        )
-
-        return self.set_volume(
-            chat_id,
-            current - amount
-        )
-
-    # ========================================================
-    # RESET
-    # ========================================================
-
-    def reset(
+    def queue_text(
         self,
         chat_id: int
     ):
 
-        self.queues[
+        current = self.current.get(
             chat_id
-        ] = []
+        )
 
-        self.current[
-            chat_id
-        ] = None
+        items = list(
+            self.queues[chat_id]
+        )
 
-        self.paused[
-            chat_id
-        ] = False
+        if not current and not items:
 
-        self.loop[
-            chat_id
-        ] = False
+            return "📭 *Queue kosong.*"
 
-        self.volume[
-            chat_id
-        ] = 100
+        lines = [
+            "🎵 *Music Queue*"
+        ]
 
-    # ========================================================
-    # STATUS
-    # ========================================================
+        # Lagu sekarang
+        if current:
 
-    def status(
-        self,
-        chat_id: int
-    ):
+            lines.append(
+                "\n▶️ *Sedang diputar:*\n"
+                f"{current.title}"
+            )
 
-        return {
+        # Queue
+        if items:
 
-            "current":
-                self.current.get(
-                    chat_id
-                ),
+            lines.append(
+                "\n📜 *Berikutnya:*"
+            )
 
-            "queue":
-                self.get_queue(
-                    chat_id
-                ),
+            for index, track in enumerate(
+                items[:10],
+                1
+            ):
 
-            "queue_length":
-                self.queue_length(
-                    chat_id
-                ),
+                lines.append(
+                    f"{index}. {track.title}"
+                )
 
-            "paused":
-                self.paused.get(
-                    chat_id,
-                    False
-                ),
+        if len(items) > 10:
 
-            "loop":
-                self.loop.get(
-                    chat_id,
-                    False
-                ),
+            lines.append(
+                f"\n… dan "
+                f"{len(items) - 10} "
+                f"lagu lainnya."
+            )
 
-            "volume":
-                self.get_volume(
-                    chat_id
-                ),
-        }
-
-
-# ============================================================
-# GLOBAL PLAYER
-# ============================================================
-
-player = QueuePlayer()
-```
+        return "\n".join(lines)
